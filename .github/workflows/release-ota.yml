@@ -1,0 +1,54 @@
+name: Release OTA
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install -U platformio
+
+      - name: Build firmware
+        run: pio run -e esp32-2432S028
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cp .pio/build/esp32-2432S028/firmware.bin dist/firmware.bin
+          cat > dist/version.json <<EOF
+          {
+            "version": "${VERSION}",
+            "url": "https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/firmware.bin"
+          }
+          EOF
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Prepared OTA assets for ${VERSION}"
+          cat dist/version.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "BTC-Mine ${{ steps.assets.outputs.version }}"
+          files: |
+            dist/firmware.bin
+            dist/version.json
+          generate_release_notes: true
