@@ -34,7 +34,7 @@ void loop() {
     if (connected != uiConnected) {
       uiConnected = connected;
       if (connected) {
-        appShowStatus(tft, "BTC-Mine", wifiOtaIpString().c_str(), FW_VERSION);
+        appShowStatus(tft, "BTC-Mine OTA", wifiOtaIpString().c_str(), FW_VERSION);
       } else {
         appShowStatus(tft, "BTC-Mine", "WiFi...", FW_VERSION);
       }
