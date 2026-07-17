@@ -8,7 +8,7 @@
 TFT_eSPI tft;
 
 namespace {
-bool uiConnected = false;
+String lastStatus;
 unsigned long lastUiMs = 0;
 }  // namespace
 
@@ -20,6 +20,7 @@ void setup() {
   digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
 
   appSetup(tft);
+  appShowStatus(tft, "BTC-Mine", "WiFi setup...", FW_VERSION);
   wifiOtaBegin();
 }
 
@@ -28,16 +29,29 @@ void loop() {
   appLoop(tft);
 
   const unsigned long now = millis();
-  if (now - lastUiMs >= 1000) {
+  if (now - lastUiMs >= 500) {
     lastUiMs = now;
-    const bool connected = wifiOtaConnected();
-    if (connected != uiConnected) {
-      uiConnected = connected;
-      if (connected) {
-        appShowStatus(tft, "BTC-Mine OTA", wifiOtaIpString().c_str(), FW_VERSION);
-      } else {
-        appShowStatus(tft, "BTC-Mine", "WiFi...", FW_VERSION);
+
+    String line1 = "BTC-Mine";
+    String line2 = wifiOtaStatusLine();
+    String line3 = FW_VERSION;
+
+    if (wifiOtaConnected()) {
+      line1 = "BTC-Mine";
+      line2 = wifiOtaIpString();
+      if (wifiOtaSsid().length() > 0) {
+        line3 = wifiOtaSsid() + " / " + String(FW_VERSION);
       }
+    } else if (wifiOtaPortalActive()) {
+      line1 = "WiFi setup";
+      line2 = "BTC-Mine-setup";
+      line3 = "open 192.168.4.1";
+    }
+
+    const String key = line1 + "|" + line2 + "|" + line3;
+    if (key != lastStatus) {
+      lastStatus = key;
+      appShowStatus(tft, line1.c_str(), line2.c_str(), line3.c_str());
     }
   }
 

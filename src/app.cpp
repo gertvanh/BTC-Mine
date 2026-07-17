@@ -5,8 +5,8 @@
 void appSetup(TFT_eSPI& tft) {
   tft.init();
   tft.setRotation(1);  // landscape 320x240 on ESP32-2432S028
-  appShowStatus(tft, "BTC-Mine", "OTA OK", FW_VERSION);
-  Serial.println("ESP32-2432S028 OTA test 0.1.1");
+  appShowStatus(tft, "BTC-Mine", "WiFi...", FW_VERSION);
+  Serial.println("ESP32-2432S028 WiFiManager + DHCP");
 }
 
 void appLoop(TFT_eSPI& tft) { (void)tft; }

@@ -37,22 +37,6 @@ jobs:
           #pragma once
           #define WIFI_SSID "${WIFI_SSID}"
           #define WIFI_PASSWORD "${WIFI_PASSWORD}"
-          #define WIFI_IP_1 192
-          #define WIFI_IP_2 168
-          #define WIFI_IP_3 1
-          #define WIFI_IP_4 34
-          #define WIFI_GATEWAY_1 192
-          #define WIFI_GATEWAY_2 168
-          #define WIFI_GATEWAY_3 1
-          #define WIFI_GATEWAY_4 1
-          #define WIFI_SUBNET_1 255
-          #define WIFI_SUBNET_2 255
-          #define WIFI_SUBNET_3 255
-          #define WIFI_SUBNET_4 0
-          #define WIFI_DNS_1 192
-          #define WIFI_DNS_2 168
-          #define WIFI_DNS_3 1
-          #define WIFI_DNS_4 1
           #define OTA_VERSION_URL ""
           #define OTA_PASSWORD ""
           EOF

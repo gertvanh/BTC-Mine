@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include <WiFiManager.h>
 
 #include "ota_github.h"
 #include "secrets.h"
@@ -13,13 +14,17 @@
 
 namespace {
 
-unsigned long lastWifiAttemptMs = 0;
+WiFiManager wm;
 unsigned long lastHttpCheckMs = 0;
 bool loggedConnection = false;
 bool otaReady = false;
+bool portalActive = false;
+bool bootstrapped = false;
 
-constexpr unsigned long kWifiRetryMs = 10000;
-constexpr unsigned long kHttpCheckMs = 60UL * 60UL * 1000UL;  // 1 hour
+constexpr unsigned long kHttpCheckMs = 60UL * 60UL * 1000UL;
+constexpr unsigned long kDefaultWifiTimeoutMs = 15000;
+constexpr int kBootButtonPin = 0;  // ESP32 BOOT button
+constexpr char kSetupApName[] = "BTC-Mine-setup";
 
 String otaVersionUrl() {
 #ifdef OTA_VERSION_URL
@@ -76,31 +81,141 @@ void setupArduinoOta() {
   Serial.printf("[OTA] ArduinoOTA ready as '%s'\n", FW_HOSTNAME);
 }
 
+bool tryDefaultNetwork() {
+  Serial.printf("[WiFi] trying default SSID '%s' (DHCP)...\n", WIFI_SSID);
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(FW_HOSTNAME);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  const unsigned long start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < kDefaultWifiTimeoutMs) {
+    delay(200);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("[WiFi] default network connected, IP: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.println("[WiFi] default network failed");
+  WiFi.disconnect(true, true);
+  delay(100);
+  return false;
+}
+
+void startConfigPortal() {
+  portalActive = true;
+  Serial.printf("[WiFi] starting setup AP '%s'\n", kSetupApName);
+  Serial.println("[WiFi] connect phone to that AP, open http://192.168.4.1");
+  wm.startConfigPortal(kSetupApName);
+}
+
+void onApCallback(WiFiManager* /*wifiManager*/) {
+  portalActive = true;
+  Serial.printf("[WiFi] config portal active — join WiFi '%s'\n", kSetupApName);
+}
+
+bool bootButtonHeld() {
+  pinMode(kBootButtonPin, INPUT_PULLUP);
+  delay(20);
+  if (digitalRead(kBootButtonPin) != LOW) return false;
+  // Require ~1.5s hold to avoid accidental resets
+  const unsigned long start = millis();
+  while (digitalRead(kBootButtonPin) == LOW) {
+    if (millis() - start >= 1500) return true;
+    delay(20);
+  }
+  return false;
+}
+
+void handleSerialCommands() {
+  static String line;
+  while (Serial.available() > 0) {
+    const char c = static_cast<char>(Serial.read());
+    if (c == '\r') continue;
+    if (c == '\n') {
+      line.trim();
+      if (line.equalsIgnoreCase("wifi-reset")) {
+        wifiOtaResetAndReboot();
+      } else if (line.equalsIgnoreCase("ota-check")) {
+        wifiOtaCheckForUpdate(true);
+      } else if (line.length() > 0) {
+        Serial.println("[CMD] unknown (try: wifi-reset | ota-check)");
+      }
+      line = "";
+    } else if (line.length() < 64) {
+      line += c;
+    }
+  }
+}
+
 }  // namespace
+
+void wifiOtaResetAndReboot() {
+  Serial.println("[WiFi] clearing saved credentials and rebooting...");
+  wm.resetSettings();
+  WiFi.disconnect(true, true);
+  delay(300);
+  ESP.restart();
+}
 
 void wifiOtaBegin() {
   WiFi.mode(WIFI_STA);
+  WiFi.setHostname(FW_HOSTNAME);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
 
-  const IPAddress localIP(WIFI_IP_1, WIFI_IP_2, WIFI_IP_3, WIFI_IP_4);
-  const IPAddress gateway(WIFI_GATEWAY_1, WIFI_GATEWAY_2, WIFI_GATEWAY_3, WIFI_GATEWAY_4);
-  const IPAddress subnet(WIFI_SUBNET_1, WIFI_SUBNET_2, WIFI_SUBNET_3, WIFI_SUBNET_4);
-  const IPAddress dns(WIFI_DNS_1, WIFI_DNS_2, WIFI_DNS_3, WIFI_DNS_4);
+  wm.setDebugOutput(false);
+  wm.setConfigPortalBlocking(false);
+  wm.setConfigPortalTimeout(0);  // stay open until configured
+  wm.setConnectTimeout(25);
+  wm.setTitle("BTC-Mine WiFi");
+  wm.setHostname(FW_HOSTNAME);
+  wm.setAPCallback(onApCallback);
 
-  if (!WiFi.config(localIP, gateway, subnet, dns)) {
-    Serial.println("[WiFi] static IP config failed");
+  if (bootButtonHeld()) {
+    Serial.println("[WiFi] BOOT held — wipe WiFi settings");
+    wm.resetSettings();
+    WiFi.disconnect(true, true);
+    delay(200);
   }
 
-  Serial.printf("[WiFi] connecting to %s as %d.%d.%d.%d\n", WIFI_SSID, WIFI_IP_1, WIFI_IP_2,
-                WIFI_IP_3, WIFI_IP_4);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  lastWifiAttemptMs = millis();
+  // Prefer credentials saved via the captive portal.
+  if (wm.getWiFiIsSaved()) {
+    Serial.println("[WiFi] connecting with saved credentials (DHCP)...");
+    portalActive = false;
+    wm.autoConnect(kSetupApName);
+  } else if (tryDefaultNetwork()) {
+    portalActive = false;
+  } else {
+    startConfigPortal();
+  }
+
+  bootstrapped = true;
+  lastHttpCheckMs = 0;
 }
 
 bool wifiOtaConnected() { return WiFi.status() == WL_CONNECTED; }
 
+bool wifiOtaPortalActive() {
+  return portalActive || wm.getConfigPortalActive();
+}
+
 String wifiOtaIpString() {
-  if (!wifiOtaConnected()) return String("—.——.—.—");
+  if (!wifiOtaConnected()) return String("--");
   return WiFi.localIP().toString();
+}
+
+String wifiOtaSsid() {
+  if (!wifiOtaConnected()) return String("");
+  return WiFi.SSID();
+}
+
+String wifiOtaStatusLine() {
+  if (wifiOtaConnected()) return wifiOtaIpString();
+  if (wifiOtaPortalActive()) return String(kSetupApName);
+  return String("WiFi...");
 }
 
 void wifiOtaCheckForUpdate(bool force) {
@@ -181,10 +296,24 @@ void wifiOtaCheckForUpdate(bool force) {
 }
 
 void wifiOtaLoop() {
-  if (WiFi.status() == WL_CONNECTED) {
+  if (!bootstrapped) return;
+
+  handleSerialCommands();
+  wm.process();
+
+  const bool connected = wifiOtaConnected();
+  portalActive = wm.getConfigPortalActive();
+
+  if (connected) {
+    if (portalActive) {
+      // Connected through portal completion — close AP side effects.
+      portalActive = false;
+    }
     if (!loggedConnection) {
       loggedConnection = true;
-      Serial.print("[WiFi] connected, IP: ");
+      Serial.print("[WiFi] connected to ");
+      Serial.print(WiFi.SSID());
+      Serial.print(", IP: ");
       Serial.println(WiFi.localIP());
       if (!otaReady) {
         setupArduinoOta();
@@ -204,10 +333,16 @@ void wifiOtaLoop() {
     Serial.println("[WiFi] disconnected");
   }
 
+  // If we dropped offline and no portal is running, reopen setup after a while.
+  static unsigned long lastPortalRetryMs = 0;
   const unsigned long now = millis();
-  if (now - lastWifiAttemptMs < kWifiRetryMs) return;
-  lastWifiAttemptMs = now;
-  Serial.println("[WiFi] reconnecting...");
-  WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  if (!wifiOtaPortalActive() && (now - lastPortalRetryMs) > 30000) {
+    lastPortalRetryMs = now;
+    if (wm.getWiFiIsSaved()) {
+      Serial.println("[WiFi] retry saved network...");
+      wm.autoConnect(kSetupApName);
+    } else {
+      startConfigPortal();
+    }
+  }
 }
